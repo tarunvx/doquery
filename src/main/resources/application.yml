@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: doquery
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 25MB
+  ai:
+    openai:
+      base-url: http://127.0.0.1:1234/
+      api-key: lm-studio
+      chat:
+        options:
+          model: ${LMSTUDIO_CHAT_MODEL:local-model}
+          temperature: 0.2
+      embedding:
+        options:
+          model: ${LMSTUDIO_EMBEDDING_MODEL:nomic-embed-text-v1.5}
+
+server:
+  port: 8080
+
+vaadin:
+  productionMode: false
+  launch-browser: false
+
+app:
+  vectorstore:
+    path: ./data/vectorstore.json
+  ingest:
+    max-bytes: 26214400
+  rag:
+    top-k: 4
+    similarity-threshold: 0.5
+
+logging:
+  level:
+    org.springframework.ai: INFO
+
