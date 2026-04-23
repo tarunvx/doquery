@@ -2,14 +2,25 @@
 
 A local-first **Retrieval-Augmented Generation (RAG)** application for querying your own PDFs, built around a strict **ports-and-adapters (hexagonal) architecture** so each of the four layers is independently replaceable.
 
-| Layer | Default | Swap to (any of) |
-|---|---|---|
-| **UI** | Vaadin Flow | REST controller (already included), CLI, gRPC, Hilla, mobile, Slack bot… |
-| **Spring AI Core** *(stays as core)* | `RagService` orchestrating `ChatClient` + `VectorStore` + `TextSplitter` | — |
-| **LLM Integration** | LM Studio (OpenAI-compat. via Spring AI) | Ollama, OpenAI, Anthropic, Bedrock, Azure OpenAI, vLLM… |
-| **DB / Vector store** | `SimpleVectorStore` (JSON file) | PgVector, Chroma, Redis, Milvus, Pinecone, Weaviate, Qdrant… |
+## Features
 
-The **only thing UI / LLM / DB layers know about each other is the `RagFacade` port**. Swapping any layer = configuration + maybe a Maven dependency. **No core changes.**
+- **Multi-vector-store partitioning** — create N named stores (e.g. per project, per user, per topic).
+  Pick the store on both Upload and Chat views; queries hit only that partition for fast, scoped answers.
+- **Knowledge mode (STRICT / HYBRID)** — STRICT answers ONLY from the selected vector store; HYBRID
+  falls back to the LLM's general knowledge when documents are insufficient, **clearly marking** such
+  passages with `[general knowledge]` and constrained by a no-fabrication system prompt.
+  Default via `app.chat.mode`; per-message via the *Allow general knowledge* toggle.
+- **Tuned for lightweight local models** — smaller chunks (`400/80`), fewer hits (`top-k: 3`) and a
+  `max-tokens: 512` cap on chat output dramatically reduce time-to-first-token and total latency.
+- **Streaming responses** — token-by-token rendering via Spring AI's reactive `stream()` and Vaadin
+  server `@Push`. UI pushes are throttled to ~80 ms so the websocket stays smooth even on long answers.
+  Toggleable per request; default controlled by `app.chat.streaming`.
+- **Thinking indicator** — animated braille spinner placeholder shown until the first token
+  arrives, then replaced live as tokens stream in.
+- **Hexagonal architecture** — UI / Spring AI core / LLM / DB layers are independently swappable
+  via `app.*.provider` switches.
+- **Same `RagFacade` for every UI** — Vaadin and REST share one bean; add CLI/gRPC/Slack with zero
+  core changes.
 
 ---
 
@@ -40,8 +51,20 @@ The **only thing UI / LLM / DB layers know about each other is the `RagFacade` p
                        │                                         │ ◄── │ VectorStorePersister │
                        │                                         │     │   (file/no-op)       │
                        └─────────────────────────────────────────┘     └──────────────────────┘
-```
 
+```
+## Layers
+
+| Layer | Default | Swap to (any of) |
+|---|---|---|
+| **UI** | Vaadin Flow | REST controller (already included), CLI, gRPC, Hilla, mobile, Slack bot… |
+| **Spring AI Core** *(stays as core)* | `RagService` orchestrating `ChatClient` + `VectorStore` + `TextSplitter` | — |
+| **LLM Integration** | LM Studio (OpenAI-compat. via Spring AI) | Ollama, OpenAI, Anthropic, Bedrock, Azure OpenAI, vLLM… |
+| **DB / Vector store** | `SimpleVectorStore` (JSON file) | PgVector, Chroma, Redis, Milvus, Pinecone, Weaviate, Qdrant… |
+
+The **only thing UI / LLM / DB layers know about each other is the `RagFacade` port**. Swapping any layer = configuration + maybe a Maven dependency. **No core changes.**
+
+---
 ### Dependency rule
 
 ```
@@ -254,6 +277,7 @@ class DocxParser implements DocumentParser {
 | Concern | Mitigation |
 |---|---|
 | Path traversal in filename | `Path.getFileName()` + regex allowlist `[A-Za-z0-9._-]` |
+| Path traversal in `storeId` | Same allowlist applied in `VectorStoreManager.normalize()` |
 | Non-PDF upload | `DocumentParser.supports()` + `%PDF` magic-byte check |
 | Oversized upload | Bounded `InputStream` enforced inside `RagService` — UI cannot bypass |
 | Hallucination | Strict grounded system prompt + similarity threshold + refusal phrase |
@@ -273,15 +297,49 @@ class DocxParser implements DocumentParser {
 
 ---
 
-## Roadmap
+## Performance tuning (lightweight local models)
 
-- Streaming responses (`chatClient...stream()`) into Vaadin `MessageList`
+End-to-end latency = `embedding(query)` + `vector search` + `LLM time-to-first-token` + `LLM generation`.
+
+The biggest lever is **prompt size** sent to the LLM. Defaults shipped:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `app.rag.chunk-size` | `400` tokens | Smaller chunks → smaller injected context |
+| `app.rag.chunk-overlap` | `80` tokens | Just enough overlap for boundary recall |
+| `app.rag.top-k` | `3` | 3 chunks × 400 ≈ ~1.2k context tokens, not 4 × 800 = 3.2k |
+| `spring.ai.openai.chat.options.max-tokens` | `512` | Caps output length — bounds total wall time |
+| Streaming UI push throttle | `80 ms` | Prevents websocket flooding on fast token streams |
+
+If responses still feel slow:
+1. Use a **distilled / quantized** chat model in LM Studio (e.g. `*-Q4_K_M`, 7B-class).
+2. Use a **small embedding** model (`nomic-embed-text-v1.5` is already a good pick).
+3. Lower `app.rag.top-k` to `2` and/or `chunk-size` to `300`.
+4. Set `LMSTUDIO_MAX_TOKENS=256` for short-answer use cases.
+5. In LM Studio: enable GPU offload, set context length to the smallest value that fits your prompts.
+
+## Reliability of HYBRID answers
+
+HYBRID mode keeps hallucination risk low through three layers:
+
+1. **System-prompt guard-rails** — the LLM is instructed to:
+   - prefer CONTEXT and never contradict it,
+   - prefix any general-knowledge passage with the marker `[general knowledge]`,
+   - **never fabricate** names, numbers, dates, quotes, code, APIs or URLs,
+   - say *"I am not sure."* when uncertain.
+2. **Low temperature** (`0.2`) reduces stochastic invention.
+3. **Visible provenance** — citations from the vector store are still attached to the answer in
+   addition to the `[general knowledge]` marker, so users can always tell what came from where.
+
+Switch the default via `app.chat.mode: STRICT|HYBRID` or override per request.
+
 - Conversation memory via `MessageChatMemoryAdvisor`
-- Per-user partitioning + Spring Security
+- Per-user authentication (Spring Security) auto-binding `storeId` to principal
 - Reranker step between retrieval and prompt
 - Additional adapters: `ollama`, `pgvector`, `chroma`, `tika-docx`
+- Server-Sent Events streaming on the REST adapter
 
-## License
+---
 
 ## Developer
 Tarun Vishwakarma

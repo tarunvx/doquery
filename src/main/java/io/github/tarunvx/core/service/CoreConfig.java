@@ -3,33 +3,29 @@ package io.github.tarunvx.core.service;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.transformer.splitter.TextSplitter;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * Wires the framework-agnostic pieces of the core layer.
- * The {@link ChatClient} is built from a {@link ChatClient.Builder} that the LLM adapter provides
- * (Spring AI auto-config). Swap LLM provider = swap LLM adapter only.
+ * NOTE: no default system prompt here — {@link RagService} sets it per call so it can switch
+ * between strict (context-only) and hybrid (context + general-knowledge) modes.
  */
 @Configuration
 public class CoreConfig {
 
-    private static final String SYSTEM_PROMPT = """
-            You are Doquery, a precise assistant. Answer the user's question using ONLY the
-            provided CONTEXT. If the context does not contain the answer, reply exactly:
-            "I cannot find the answer in the provided documents."
-            Be concise. Do not invent citations.
-            """;
-
     @Bean
     public ChatClient chatClient(ChatClient.Builder builder) {
-        return builder.defaultSystem(SYSTEM_PROMPT).build();
+        return builder.build();
     }
 
     @Bean
-    public TextSplitter textSplitter() {
-        return new TokenTextSplitter(800, 350, 5, 10000, true);
+    public TextSplitter textSplitter(
+            @Value("${app.rag.chunk-size:400}") int chunkSize,
+            @Value("${app.rag.chunk-overlap:80}") int overlap,
+            @Value("${app.rag.min-chunk-chars:5}") int minChars,
+            @Value("${app.rag.max-chunks-per-doc:10000}") int maxChunks) {
+        return new TokenTextSplitter(chunkSize, overlap, minChars, maxChunks, true);
     }
 }
-
-

@@ -13,6 +13,12 @@ spring:
         options:
           model: ${LMSTUDIO_CHAT_MODEL:local-model}
           temperature: 0.2
+          # NOTE: do NOT set max-tokens here for LM Studio — some local OpenAI-compatible
+          # backends silently return an empty completion when this is provided. Control
+          # length via the system prompt ("Be concise.") instead. To override, use:
+          #   LMSTUDIO_MAX_TOKENS=512 mvn spring-boot:run
+          # and uncomment:
+          # max-tokens: ${LMSTUDIO_MAX_TOKENS:512}
       embedding:
         options:
           model: ${LMSTUDIO_EMBEDDING_MODEL:nomic-embed-text-v1.5}
@@ -26,14 +32,26 @@ vaadin:
 
 app:
   vectorstore:
-    path: ./data/vectorstore.json
+    provider: simple
+    dir: ./data/vectorstores
   ingest:
     max-bytes: 26214400
   rag:
-    top-k: 4
+    # Smaller chunks + fewer hits = much smaller prompt = faster inference on a lightweight LLM.
+    top-k: 3
     similarity-threshold: 0.5
+    chunk-size: 400
+    chunk-overlap: 80
+    min-chunk-chars: 5
+    max-chunks-per-doc: 10000
+  chat:
+    streaming: true
+    # STRICT  → answer ONLY from the selected vector store (refuse otherwise).
+    # HYBRID  → fall back to the LLM's general knowledge when documents are insufficient,
+    #           with a "[general knowledge]" marker and a no-fabrication guard-rail.
+    mode: STRICT
 
 logging:
   level:
     org.springframework.ai: INFO
-
+    io.github.tarunvx.core.service.RagService: DEBUG

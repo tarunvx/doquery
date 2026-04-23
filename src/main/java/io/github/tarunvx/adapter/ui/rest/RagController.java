@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -23,18 +24,27 @@ public class RagController {
         this.rag = rag;
     }
 
-    @PostMapping(value = "/documents", consumes = "multipart/form-data")
-    public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file) throws IOException {
-        if (file.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "empty file"));
-        int chunks = rag.ingest(file.getOriginalFilename(), file.getInputStream());
-        return ResponseEntity.ok(Map.of("filename", file.getOriginalFilename(), "chunks", chunks));
+    @GetMapping("/stores")
+    public List<String> stores() {
+        return rag.listStores();
     }
 
-    public record AskRequest(String question) {}
+    @PostMapping(value = "/documents", consumes = "multipart/form-data")
+    public ResponseEntity<?> upload(@RequestParam("file") MultipartFile file,
+                                    @RequestParam(value = "storeId", required = false) String storeId) throws IOException {
+        if (file.isEmpty()) return ResponseEntity.badRequest().body(Map.of("error", "empty file"));
+        int chunks = rag.ingest(storeId, file.getOriginalFilename(), file.getInputStream());
+        return ResponseEntity.ok(Map.of(
+                "filename", file.getOriginalFilename(),
+                "chunks", chunks,
+                "storeId", storeId == null ? "default" : storeId));
+    }
+
+    public record AskRequest(String storeId, String question, RagFacade.KnowledgeMode mode) {}
 
     @PostMapping("/ask")
     public Answer ask(@RequestBody AskRequest req) {
-        return rag.ask(req.question());
+        return rag.ask(req.storeId(), req.question(),
+                req.mode() == null ? rag.defaultMode() : req.mode());
     }
 }
-
